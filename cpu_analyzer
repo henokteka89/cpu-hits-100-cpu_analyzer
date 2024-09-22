@@ -1,15 +1,20 @@
-CREATE OR ALTER PROCEDURE SP_CPUAnalysis
+USE [admin]
+GO
+/****** Object:  StoredProcedure [dbo].[SP_CPUAnalysis] ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SP_CPUAnalysis]
     @analysis NVARCHAR(50),
     @database NVARCHAR(128),
     @suspecteduser NVARCHAR(128) = NULL,
     @cpucap BIT = NULL -- Optional parameter to limit CPU cap
 AS
-
 /*
--- To make quick analysis and helpful to stem cpu. Don't apply on prod servers.
--- This will be edited soon
---For Test
--- EXEC SP_CPUAnalysis @analysis = 'highcpu', @database = 'stackoverflow2013', @suspecteduser = 'accounting', @cpucap = 1;;
+--Test
+-- This is developing, not completed yet. Don't run it on Production servers
+ EXEC admin..SP_CPUAnalysis @analysis = 'highcpu', @database = 'stackoverflow2013', @suspecteduser = 'accounting', @cpucap = 1;
 */
 BEGIN
     SET NOCOUNT ON;
@@ -17,19 +22,25 @@ BEGIN
     -- Check if analysis type is 'highcpu'
     IF @analysis = 'highcpu'
     BEGIN
-	Create table #topconnections ([Top10 Connections] INT IDENTITY(1,1),login_name nvarchar(50), totalconnection int)
-	insert into #topconnections
-	SELECT    TOP 10
-	 login_name, COUNT(*) hastotalconnection
-                 FROM sys.dm_exec_sessions 
-                 WHERE database_id = DB_ID(@database) 
-				 AND status IN ('sleeping', 'running') --and login_name not like NT, sa, domain\
-				 group by login_name
-select * from #topconnections
-        -- 1. Top 10 CPU-Consuming Queries
+        -- 1. Top 10 Connections in the Database
+        IF OBJECT_ID('tempdb..#TopConnections') IS NOT NULL DROP TABLE #TopConnections;
+        CREATE TABLE #TopConnections ([Top 10 Connections] INT IDENTITY(1,1), LoginName NVARCHAR(50), TotalConnections INT);
+
+        INSERT INTO #TopConnections
+        SELECT TOP 10 
+            login_name AS LoginName, 
+            COUNT(*) AS TotalConnections
+        FROM sys.dm_exec_sessions 
+        WHERE database_id = DB_ID(@database) 
+          AND status IN ('sleeping', 'running')
+        GROUP BY login_name;
+
+        SELECT * FROM #TopConnections;
+
+        -- 2. Top 10 CPU-Consuming Queries
         IF OBJECT_ID('tempdb..#TopCPUQueries') IS NOT NULL DROP TABLE #TopCPUQueries;
         CREATE TABLE #TopCPUQueries (
-            [Top10 CPU] INT IDENTITY(1,1),
+            [Top 10 CPU] INT IDENTITY(1,1),
             QueryText NVARCHAR(MAX),
             CPU_Time INT,
             SessionID INT,
@@ -38,7 +49,6 @@ select * from #topconnections
             ExecutionPlan XML
         );
 
-        -- Retrieve top 10 CPU-consuming queries, excluding the current session
         INSERT INTO #TopCPUQueries (QueryText, CPU_Time, SessionID, LoginName, HostName, ExecutionPlan)
         SELECT 
             SUBSTRING(ST.text, (ER.statement_start_offset / 2) + 1, 
@@ -55,18 +65,15 @@ select * from #topconnections
         JOIN sys.dm_exec_sessions AS S
             ON ER.session_id = S.session_id
         CROSS APPLY sys.dm_exec_sql_text(ER.sql_handle) AS ST
-        OUTER APPLY sys.dm_exec_query_plan(ER.plan_handle) AS EP  -- Getting the query plan if available
+        OUTER APPLY sys.dm_exec_query_plan(ER.plan_handle) AS EP  -- Get the query plan if available
         WHERE ER.cpu_time > 0
           AND ER.session_id <> @@SPID  -- Exclude the current session
         ORDER BY ER.cpu_time DESC
         OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY;
 
-        -- 2. DAC Check and Enabling Statement
-        IF OBJECT_ID('tempdb..#DACStatement') IS NOT NULL DROP TABLE #DACStatement;
-        CREATE TABLE #DACStatement (
-            DACStatus NVARCHAR(255)
-        );
+        SELECT * FROM #TopCPUQueries;
 
+        -- 3. DAC Check (Only show if DAC is disabled)
         DECLARE @isDACEnabled BIT;
         SELECT @isDACEnabled = CAST(value_in_use AS BIT)
         FROM sys.configurations
@@ -74,57 +81,44 @@ select * from #topconnections
 
         IF @isDACEnabled = 0
         BEGIN
-            INSERT INTO #DACStatement (DACStatus)
-            VALUES ('Enable DAC: EXEC sp_configure ''remote admin connections'', 1; RECONFIGURE;');
-        END
-        ELSE
-        BEGIN
-            INSERT INTO #DACStatement (DACStatus)
-            VALUES ('DAC is Enabled');
+            PRINT 'DAC is not enabled. To enable it, use the following command:';
+            PRINT 'EXEC sp_configure ''remote admin connections'', 1; RECONFIGURE;';
         END
 
-        -- 3. Suspected User Actions
+        -- 4. Suspected User Actions (if provided)
         IF @suspecteduser IS NOT NULL
         BEGIN
-            -- Generate Kill and Connect Grant/Deny commands for the suspected user
             IF OBJECT_ID('tempdb..#SuspectedUserCommands') IS NOT NULL DROP TABLE #SuspectedUserCommands;
             CREATE TABLE #SuspectedUserCommands (
-                StatementType NVARCHAR(50),
-                SQLCommand NVARCHAR(MAX)
+                CommandType NVARCHAR(50),
+                [SQLCommand: Kill active; Deny/Grant access to the suspected user] NVARCHAR(MAX)
             );
 
-            -- Kill command for all sessions of the suspected user
-            INSERT INTO #SuspectedUserCommands (StatementType, SQLCommand)
+            -- Kill command for suspected user's active sessions
+            INSERT INTO #SuspectedUserCommands (CommandType, [SQLCommand: Kill active; Deny/Grant access to the suspected user])
             SELECT 
                 'Kill Command',
-                CONCAT('KILL ', S.session_id, ' -- Killing connection from the usual suspect')
+                CONCAT('KILL ', S.session_id, ' -- Killing connection for suspected user: ', @suspecteduser)
             FROM sys.dm_exec_sessions AS S
             WHERE S.login_name = @suspecteduser
             AND S.is_user_process = 1;  -- Exclude system sessions
 
-            -- Grant/Deny Connect SQL statements for the suspected user
-            INSERT INTO #SuspectedUserCommands (StatementType, SQLCommand)
+            -- Deny/Grant Connect SQL command for suspected user
+            INSERT INTO #SuspectedUserCommands (CommandType, [SQLCommand: Kill active; Deny/Grant access to the suspected user])
             VALUES (
                 'Grant/Deny Command',
                 CONCAT('USE master; ', 'DENY CONNECT SQL TO ', QUOTENAME(@suspecteduser), '; GRANT CONNECT SQL TO ', QUOTENAME(@suspecteduser), ';')
             );
-        END
 
-        -- Return results from tables
-        SELECT * FROM #TopCPUQueries;
-        SELECT * FROM #DACStatement;
-
-        IF @suspecteduser IS NOT NULL
-        BEGIN
             SELECT * FROM #SuspectedUserCommands;
         END
 
-        -- 4. CPU Cap Limiting (Resource Governor) - Inserted into Table
+        -- 5. CPU Cap Limiting (Resource Governor) if enabled
         IF @cpucap = 1
         BEGIN
             IF OBJECT_ID('tempdb..#CPUCapInfo') IS NOT NULL DROP TABLE #CPUCapInfo;
             CREATE TABLE #CPUCapInfo (
-                Info NVARCHAR(MAX)
+                [CPU Cap Limiting] NVARCHAR(MAX)
             );
 
             -- Fetch the current CPU cap from Resource Governor
@@ -134,28 +128,29 @@ select * from #topconnections
             FROM sys.resource_governor_resource_pools
             WHERE name = 'default';
 
-            -- Insert the current CPU cap
-            INSERT INTO #CPUCapInfo (Info)
-            VALUES (CONCAT('-- Current CPU Cap for Resource Governor: ', @currentcpucap, '%'));
+            -- Insert current CPU cap into the table
+            INSERT INTO #CPUCapInfo ([CPU Cap Limiting])
+            VALUES (CONCAT('-- Current CPU Cap for Resource Governor: ', @currentcpucap, '% (The default cap is 100%)'));
 
             -- Insert the syntax to set the new CPU cap
-            INSERT INTO #CPUCapInfo (Info)
-            VALUES 
-            ('DECLARE @newcpucap INT = putvaluehere; -- Insert your desired CPU cap'),
-            ('ALTER RESOURCE POOL "default" WITH (CAP_CPU_PERCENT = @newcpucap);'),
-            ('ALTER RESOURCE GOVERNOR RECONFIGURE;');
+            INSERT INTO #CPUCapInfo ([CPU Cap Limiting])
+            VALUES
+                ('DECLARE @newcpucap INT = <putcaphere>; -- Insert your desired CPU cap like 60 for 60%:'),
+                ('DECLARE @sql NVARCHAR(1000);'),
+                ('SET @sql = N''ALTER RESOURCE POOL "default" WITH (CAP_CPU_PERCENT = '' + CAST(@newcpucap AS NVARCHAR(10)) + '');'''),
+                ('EXEC sp_executesql @sql;'),
+                ('ALTER RESOURCE GOVERNOR RECONFIGURE;');
 
-            -- Return the CPU Cap information
+            -- Display CPU cap info
             SELECT * FROM #CPUCapInfo;
 
             -- Cleanup CPU Cap info table
             DROP TABLE #CPUCapInfo;
         END
 
-        -- Cleanup
+        -- Cleanup temporary tables
         DROP TABLE #TopCPUQueries;
-        DROP TABLE #DACStatement;
-		 DROP TABLE #topconnections;
+        DROP TABLE #TopConnections;
 
         IF @suspecteduser IS NOT NULL
         BEGIN
@@ -167,4 +162,3 @@ select * from #topconnections
         PRINT 'Invalid analysis parameter. Only "highcpu" is supported.';
     END
 END
-GO
