@@ -1,0 +1,26 @@
+SELECT distinct 'kill ' + convert(varchar, r.session_id) "Session that can be killed",
+    s.login_name,
+    s.host_name,
+    r.status,
+    r.command,
+    r.cpu_time / 1000 cpu_sec,
+    r.total_elapsed_time / 1000 elapsed_sec,
+    r.reads,
+    r.writes,
+    r.logical_reads,
+    SUBSTRING(st.text, (r.statement_start_offset/2)+1, 
+        ((CASE r.statement_end_offset
+            WHEN -1 THEN DATALENGTH(st.text)
+            ELSE r.statement_end_offset 
+        END - r.statement_start_offset)/2)+1) AS current_statement,
+    st.text AS batch_text
+FROM
+    sys.dm_exec_requests r
+INNER JOIN
+    sys.dm_exec_sessions s ON r.session_id = s.session_id
+CROSS APPLY
+    sys.dm_exec_sql_text(r.sql_handle) st
+--WHERE  r.session_id != @@SPID -- Exclude the current session
+
+ORDER BY
+    elapsed_sec DESC;
