@@ -1,0 +1,6 @@
+-- Dynamic Management View
+select * from sys.dm_exec_query_stats
+select * from sys.dm_exec_query_stats order by creation_time desc
+select * from sys.dm_exec_query_stats order by total_worker_time desc -- see which query is taking larger worker time
+select * from sys.dm_exec_query_plan (0x06000B00566D3D0649D0E1A3B000000000000000000000000000000000000000000000000000000000000000)
+select * from sys.dm_exec_procedure_stats
