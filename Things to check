@@ -1,0 +1,37 @@
+Review Wait Statistics:
+
+SELECT TOP 5 wait_type, wait_time_ms, waiting_tasks_count
+FROM sys.dm_os_wait_stats
+ORDER BY wait_time_ms DESC;
+
+Retrieve Top CPU-Intensive Queries:
+SELECT TOP 10
+    qs.total_worker_time / 1000 AS TotalCPU_MS,
+    qs.execution_count,
+    qs.total_elapsed_time / 1000 AS TotalDuration_MS,
+    (qs.total_worker_time / qs.execution_count) / 1000 AS AvgCPU_MS_PerExec,
+    SUBSTRING(st.text, (qs.statement_start_offset / 2) + 1,
+    ((CASE qs.statement_end_offset
+        WHEN -1 THEN DATALENGTH(st.text)
+        ELSE qs.statement_end_offset END
+        - qs.statement_start_offset) / 2) + 1) AS QueryText,
+    qp.query_plan
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+ORDER BY TotalCPU_MS DESC;
+Analyze Execution Plans:
+
+Look for issues like:
+Missing indexes
+Table scans
+High logical reads
+Expensive operators (e.g., sorts, hash matches)
+Save Results for Reference:
+
+Export the results to a file for detailed analysis.
+
+Missing index?
+SELECT TOP 5 *
+FROM sys.dm_db_missing_index_details
+ORDER BY avg_total_user_cost * avg_user_impact * (user_seeks + user_scans) DESC;
