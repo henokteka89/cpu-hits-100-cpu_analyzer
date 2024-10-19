@@ -7,9 +7,10 @@ EXEC dbo.usp_GetTopExecutedStoredProcs @time_interval = 2, @interval_type = 'hou
 EXEC dbo.usp_GetTopExecutedStoredProcs @time_interval = 1, @interval_type = 'day', @include_system_dbs = 1;
 
 */
+ 
 
-
-CREATE PROCEDURE dbo.usp_GetTopExecutedStoredProcs
+CREATE or Alter PROCEDURE dbo.usp_GetTopExecutedStoredProcs
+ 
     @time_interval INT,       -- Time interval in either hours or days
     @interval_type NVARCHAR(10) = 'hour', -- Type of interval: 'hour' or 'day'
     @include_system_dbs BIT = 0 -- Option to include system databases: 1 = include, 0 = exclude
@@ -36,12 +37,16 @@ BEGIN
             DB_NAME(ps.database_id) AS DatabaseName,
             OBJECT_NAME(ps.object_id, ps.database_id) AS ProcedureName,
             ps.execution_count AS ExecutionCount,
-            ps.total_worker_time / 1000 AS [Total CPU Time (ms)],
-            ps.total_elapsed_time / 1000 AS [Total Elapsed Time (ms)],
-            (ps.total_elapsed_time / ps.execution_count) / 1000 AS [Average Execution Time (ms)],
-            ps.total_logical_reads AS [Total Logical Reads],
-            ps.total_physical_reads AS [Total Physical Reads],
-            ps.total_logical_writes AS [Total Logical Writes],
+            COALESCE(ps.total_worker_time, 0) / 1000 AS [Total CPU Time (ms)],
+            COALESCE(ps.total_elapsed_time, 0) / 1000 AS [Total Elapsed Time (ms)],
+            CASE 
+                WHEN COALESCE(ps.execution_count, 0) > 0 
+                THEN (COALESCE(ps.total_elapsed_time, 0) / COALESCE(ps.execution_count, 1)) / 1000
+                ELSE 0
+            END AS [Average Execution Time (ms)], -- Safely handle divide by zero
+            COALESCE(ps.total_logical_reads, 0) AS [Total Logical Reads],
+            COALESCE(ps.total_physical_reads, 0) AS [Total Physical Reads],
+            COALESCE(ps.total_logical_writes, 0) AS [Total Logical Writes],
             ps.last_execution_time AS [Last Execution Time]
         FROM 
             sys.dm_exec_procedure_stats ps
@@ -61,10 +66,22 @@ BEGIN
         [Total Physical Reads],
         [Total Logical Writes],
         [Last Execution Time],
-        ([Total CPU Time (ms)] * 100.0) / SUM([Total CPU Time (ms)]) OVER() AS [CPU Load Contribution (%)], -- CPU load
-        ([Total Elapsed Time (ms)] * 100.0) / SUM([Total Elapsed Time (ms)]) OVER() AS [Elapsed Time Contribution (%)], -- Elapsed time
-        ([Total Logical Reads] * 100.0) / SUM([Total Logical Reads]) OVER() AS [Logical Reads Contribution (%)], -- Logical reads
-        ([Total Physical Reads] * 100.0) / SUM([Total Physical Reads]) OVER() AS [Physical Reads Contribution (%)]
+        CASE WHEN SUM([Total CPU Time (ms)]) OVER() > 0 
+             THEN ([Total CPU Time (ms)] * 100.0) / SUM([Total CPU Time (ms)]) OVER() 
+             ELSE 0 
+        END AS [CPU Load Contribution (%)], -- Safely handle if no CPU load is present
+        CASE WHEN SUM([Total Elapsed Time (ms)]) OVER() > 0 
+             THEN ([Total Elapsed Time (ms)] * 100.0) / SUM([Total Elapsed Time (ms)]) OVER()
+             ELSE 0 
+        END AS [Elapsed Time Contribution (%)], -- Safely handle elapsed time
+        CASE WHEN SUM([Total Logical Reads]) OVER() > 0 
+             THEN ([Total Logical Reads] * 100.0) / SUM([Total Logical Reads]) OVER() 
+             ELSE 0 
+        END AS [Logical Reads Contribution (%)],
+        CASE WHEN SUM([Total Physical Reads]) OVER() > 0 
+             THEN ([Total Physical Reads] * 100.0) / SUM([Total Physical Reads]) OVER()
+             ELSE 0 
+        END AS [Physical Reads Contribution (%)]
     FROM 
         ProcStats
     ORDER BY 
