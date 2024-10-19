@@ -2,18 +2,21 @@
 Helps to retrieve the frequently executed queries along with their cpu load (total, average)
 Sample execution
 --To get the top executed procedures from the last 2 hours, excluding system databases:
-EXEC dbo.usp_GetTopExecutedStoredProcs @time_interval = 2, @interval_type = 'hour', @include_system_dbs = 0;
+EXEC dbo.usp_GetTopExecutedStoredProcs @TOPRESULT = 15 , @time_interval = 2, @interval_type = 'hour', @include_system_dbs = 0;
 --To get the top executed procedures from the last day, including system databases:
-EXEC dbo.usp_GetTopExecutedStoredProcs @time_interval = 1, @interval_type = 'day', @include_system_dbs = 1;
-
+EXEC dbo.usp_GetTopExecutedStoredProcs @TOPRESULT = 15, @time_interval = 1, @interval_type = 'day', @include_system_dbs = 1;
 */
  
+ USE ADMIN
+ GO
+
 
 CREATE or Alter PROCEDURE dbo.usp_GetTopExecutedStoredProcs
  
-    @time_interval INT,       -- Time interval in either hours or days
-    @interval_type NVARCHAR(10) = 'hour', -- Type of interval: 'hour' or 'day'
-    @include_system_dbs BIT = 0 -- Option to include system databases: 1 = include, 0 = exclude
+    @time_interval INT,						-- Time interval in either hours or days
+    @interval_type NVARCHAR(10) = 'hour',	-- Type of interval: 'hour' or 'day'
+    @include_system_dbs BIT = 0,			-- Option to include system databases: 1 = include, 0 = exclude
+	@TOPRESULT INT = 10						-- Top Result default = 10
 AS
 BEGIN
     -- Validate interval type
@@ -55,7 +58,8 @@ BEGIN
             AND (@include_system_dbs = 1 OR DB_NAME(ps.database_id) NOT IN ('master', 'msdb', 'model', 'tempdb')) -- Exclude system DBs if requested
     )
     -- Main query to calculate CPU load and other contributions
-    SELECT TOP 10
+    
+	SELECT TOP (@TOPRESULT)
         DatabaseName,
         ProcedureName,
         ExecutionCount,
