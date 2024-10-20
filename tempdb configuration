@@ -1,0 +1,55 @@
+-- Analyze tempdb configuration and suggest optimal settings
+WITH CPUInfo AS (
+    SELECT
+        cpu_count AS LogicalCPUs,
+        scheduler_count AS Schedulers
+    FROM sys.dm_os_sys_info
+),
+CurrentTempdbConfig AS (
+    SELECT 
+        name AS FileName,
+        type_desc AS FileType,
+        size * 8 / 1024 AS SizeMB,  -- Size in MB
+        growth * 8 / 1024 AS GrowthMB,  -- Growth in MB
+        max_size * 8 / 1024 AS MaxSizeMB  -- Max Size in MB (-1 means unlimited)
+    FROM sys.master_files
+    WHERE database_id = 2  -- tempdb database_id is always 2
+),
+TempdbAnalysis AS (
+    SELECT 
+        CPUInfo.LogicalCPUs,
+        COUNT(CASE WHEN ctc.FileType = 'ROWS' THEN 1 END) AS DataFileCount,
+        SUM(CASE WHEN ctc.FileType = 'ROWS' THEN SizeMB END) AS TotalDataFileSizeMB,
+        SUM(CASE WHEN ctc.FileType = 'LOG' THEN SizeMB END) AS TotalLogFileSizeMB,
+        ctc.GrowthMB,
+        ctc.MaxSizeMB,
+        CPUInfo.LogicalCPUs * 25 AS SuggestedTotalSizeMB,
+        CPUInfo.LogicalCPUs AS SuggestedFileCount,
+        (CPUInfo.LogicalCPUs * 25) / CPUInfo.LogicalCPUs AS SuggestedFileSizeMB,
+        CASE 
+            WHEN ctc.GrowthMB IS NOT NULL AND ctc.GrowthMB < 64 THEN 64
+            ELSE ctc.GrowthMB 
+        END AS SuggestedGrowthMB,
+        CASE 
+            WHEN ctc.MaxSizeMB = -1 THEN 400  -- Default limit suggestion
+            ELSE ctc.MaxSizeMB
+        END AS SuggestedMaxSizeMB
+    FROM 
+        CPUInfo
+    CROSS JOIN 
+        CurrentTempdbConfig ctc
+)
+SELECT 
+    LogicalCPUs AS 'Logical CPUs',
+    DataFileCount AS 'Current Number of Data Files',
+    TotalDataFileSizeMB AS 'Current Total Data File Size (MB)',
+    TotalLogFileSizeMB AS 'Current Total Log File Size (MB)',
+    GrowthMB AS 'Current Autogrowth (MB)',
+    MaxSizeMB AS 'Current Max Size (MB)',
+    SuggestedFileCount AS 'Suggested Number of Data Files',
+    SuggestedTotalSizeMB AS 'Suggested Total Data File Size (MB)',
+    SuggestedFileSizeMB AS 'Suggested Size per Data File (MB)',
+    SuggestedGrowthMB AS 'Suggested Autogrowth (MB)',
+    SuggestedMaxSizeMB AS 'Suggested Max Size (MB)'
+FROM 
+    TempdbAnalysis;
